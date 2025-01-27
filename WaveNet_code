@@ -1,0 +1,96 @@
+import pandas as pd
+import numpy as np
+import tensorflow as tf
+import matplotlib.pyplot as plt
+from tensorflow.keras.layers import Input, Conv1D, Add, Multiply, Activation
+from tensorflow.keras.models import Model
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+
+file_path = r'C:\Users\TOSHİBA\Desktop\data11.xlsx'
+
+def create_wavenet_model(input_shape, dilation_rates, nb_filters, nb_layers, kernel_size, tanh_clip=2.0):
+  input_layer = Input(shape=input_shape)
+
+  x = input_layer
+  skip_connections = []
+
+  for i in range(nb_layers):
+    for j, rate in enumerate(dilation_rates):
+      # Causal convolution
+      causal_conv = Conv1D(nb_filters, kernel_size,
+                 dilation_rate=rate,
+                 padding='causal',
+                 name='causal_conv_%d_%d' % (i, rate))(x)
+      # Gated activation
+      tanh_out = Activation('tanh')(causal_conv)
+      sigm_out = Activation('sigmoid')(causal_conv)
+      gate = Multiply(name='gate_%d_%d' % (i, rate))([tanh_out, sigm_out])
+      # Residual connection
+      res_connection = Conv1D(nb_filters, 1, padding='same')(gate)
+      x_skip = x if j == 0 else Add()([x_skip, res_connection])
+      skip_connections.append(x_skip)
+      x = gate
+
+    x = Activation('relu')(x)
+    x = Conv1D(nb_filters, 1, padding='same')(x)
+    x = Add()(skip_connections)
+    skip_connections = []
+
+  # Output layer
+  output_layer = Conv1D(1, 1, padding='same', activation='relu')(x)
+  output_layer = tf.squeeze(output_layer, axis=-1) 
+  model = Model(input_layer, output_layer)
+  return model
+
+def load_data_from_excel(file_path, sheet_name, column_name, window_size):
+  # Read the Excel file
+  df = pd.read_excel(file_path, sheet_name=sheet_name)
+
+  # Extract the time series data as a 1D NumPy array
+  data = df[column_name].values
+
+  # Load the data using the original load_data function
+  X, y = load_data(data, window_size)
+
+  return X, y
+
+def load_data(data, window_size):
+  X, y = [], []
+  for i in range(len(data) - window_size - 1):
+    X.append(data[i:i + window_size])
+    y.append(data[i + window_size])
+  X, y = np.array(X), np.array(y)
+  return X, y
+
+# Assuming 'rainfall_data' is your daily rainfall time series data
+window_size = 1 # Using t and t-1 for t+1 prediction
+X, y = load_data_from_excel(r'C:\Users\TOSHİBA\Desktop\data11.xlsx', 'Sayfa1', 'Rainfall', window_size)
+
+# Split data into training and testing sets
+train_size = int(0.75 * len(X))
+X_train, X_test = X[:train_size], X[train_size:]
+y_train, y_test = y[:train_size], y[train_size:]
+
+dilation_rates = [2 ** i for i in range(10)] # Example dilation rates
+nb_filters = 32 # Example number of filters
+nb_layers = 10 # Example number of layers
+kernel_size = 2 # Example kernel size
+
+model = create_wavenet_model(input_shape=(window_size, 1),
+               dilation_rates=dilation_rates,
+               nb_filters=nb_filters,
+               nb_layers=nb_layers,
+               kernel_size=kernel_size)
+
+model.compile(optimizer='adam', loss='mse')
+model.fit(X_train, y_train, epochs=2, batch_size=16, validation_data=(X_test, y_test))
+
+# Predict the next value in the sequence
+y_pred = model.predict(X_test) # Predict the next value
+
+
+# Calculate the MSE, NSE, and MAE
+mse = mean_squared_error(y_test, y_pred)
+nse = 1 - np.sum((y_test - y_pred)**2) / np.sum((y_test - np.mean(y_test))**2)
+mae = mean_absolute_error(y_test, y_pred)
+
